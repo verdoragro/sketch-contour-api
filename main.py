@@ -3,9 +3,19 @@ import io
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 app = FastAPI(title="Sketch Contour API")
+
+# CORS bem liberal
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 MAX_SIDE = 1200  # processa nessa resolução e volta ao tamanho original
 
