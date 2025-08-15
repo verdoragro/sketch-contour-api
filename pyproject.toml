@@ -1,0 +1,10 @@
+[project]
+name = "verdora-sketch-contour-api"
+version = "0.1.0"
+description = "API FastAPI para conversão de imagens em esboços com contornos com contornos destacados."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi[standard]>=0.116.1",
+    "opencv-python-headless>=4.12.0.88",
+]
