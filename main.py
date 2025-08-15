@@ -17,7 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MAX_SIDE = 1200  # processa nessa resolução e volta ao tamanho original
+MAX_SIDE = 800  # reduzido para processar mais rápido
 
 
 def _read_image(file_bytes: bytes) -> np.ndarray:
@@ -45,61 +45,55 @@ def _process(img_bgr: np.ndarray, thickness: int, bg_opacity: float) -> np.ndarr
     work, scale = _resize_for_processing(img_bgr, MAX_SIDE)
     H, W = work.shape[:2]
 
-    # 2) GrabCut com retângulo amplo
-    mask_gc = np.zeros((H, W), np.uint8)
-    rect = (10, 10, W - 20, H - 20)
-    bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
-    cv2.grabCut(work, mask_gc, rect, bgd, fgd, 5, cv2.GC_INIT_WITH_RECT)
-    fg = np.where((mask_gc == cv2.GC_FGD) | (mask_gc == cv2.GC_PR_FGD), 255, 0).astype(
-        np.uint8
-    )
-
-    # 3) Reforço por arestas próximas ao FG
+    # 2) Detecção de bordas mais rápida ao invés de GrabCut
     gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
-    v = np.median(gray[fg > 0]) if np.any(fg > 0) else np.median(gray)  # type: ignore
-    low, high = int(max(0, 0.66 * v)), int(min(255, 1.33 * v))
-    edges = cv2.Canny(gray, low, high, L2gradient=True)
-    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
-    edges_near_fg = cv2.bitwise_and(
-        edges, edges, mask=cv2.dilate(fg, np.ones((7, 7), np.uint8), iterations=1)
-    )
 
-    # 4) Máscara final e limpeza
-    mask = cv2.bitwise_or(fg, edges_near_fg)
-    mask = cv2.morphologyEx(
-        mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8), iterations=2
-    )
-    mask = cv2.morphologyEx(
-        mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8), iterations=1
-    )
+    # Blur leve para reduzir ruído
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
 
-    # 5) Contornos com buracos
-    contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
-    if hierarchy is None or len(contours) == 0:
+    # Canny com parâmetros fixos otimizados para performance
+    low, high = 50, 150
+    edges = cv2.Canny(gray, low, high, apertureSize=3, L2gradient=True)
+
+    # Dilatação menor para conectar bordas próximas
+    kernel = np.ones((2, 2), np.uint8)
+    edges = cv2.dilate(edges, kernel, iterations=1)
+
+    # 3) Buscar contornos principais diretamente
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if len(contours) == 0:
         raise ValueError("Não foram encontrados contornos.")
-    area_thresh = 0.001 * H * W
+
+    # Filtrar por área mínima e simplificar contornos
+    area_thresh = 0.002 * H * W
     kept = []
     for cnt in contours:
-        if cv2.contourArea(cnt) >= area_thresh:
-            eps = 0.003 * cv2.arcLength(cnt, True)
-            kept.append(cv2.approxPolyDP(cnt, eps, True))
+        area = cv2.contourArea(cnt)
+        if area >= area_thresh:
+            # Simplificação mais agressiva para performance
+            eps = 0.01 * cv2.arcLength(cnt, True)
+            simplified = cv2.approxPolyDP(cnt, eps, True)
+            if len(simplified) > 2:  # garantir que ainda é um contorno válido
+                kept.append(simplified)
 
-    # 6) Render: escurece fundo + traça contornos em preto
-    # (escurecer = multiplicar pelo fator (1 - bg_opacity) nas regiões todas,
-    # mantendo a imagem visível porém opaca)
-    out = work.astype(np.float32)
-    out *= 1.0 - bg_opacity  # escurece tudo
-    out = out.astype(np.uint8)
+    # 4) Render: escurece fundo + traça contornos
+    out = work.copy()
 
+    # Escurecer o fundo
+    if bg_opacity > 0:
+        out = (out * (1.0 - bg_opacity)).astype(np.uint8)
+
+    # Desenhar contornos
     for cnt in kept:
         cv2.polylines(
             out, [cnt], True, (0, 0, 0), thickness=thickness, lineType=cv2.LINE_AA
         )
 
-    # 7) Redimensiona de volta ao tamanho original, se preciso
+    # 5) Redimensiona de volta ao tamanho original, se preciso
     if scale < 1.0:
         h0, w0 = img_bgr.shape[:2]
-        out = cv2.resize(out, (w0, h0), interpolation=cv2.INTER_CUBIC)
+        out = cv2.resize(out, (w0, h0), interpolation=cv2.INTER_LINEAR)
 
     return out
 
